@@ -1,5 +1,7 @@
 require 'test/helper'
 require 'aws/s3'
+require 'mongo'
+require 'mongo/gridfs'
 
 class StorageTest < Test::Unit::TestCase
   def rails_env(env)
@@ -336,6 +338,100 @@ class StorageTest < Test::Unit::TestCase
           should "be on S3" do
             assert true
           end
+        end
+      end
+    end
+  end
+  
+  context "Parsing GridFS credentials" do
+    setup do
+      dummy_connection = stub
+      dummy_connection.stubs(:db => dummy_connection)
+      Mongo::Connection.stubs(:new => dummy_connection)
+
+      rebuild_model :storage => :gridfs,
+                    :gridfs => {:not => :important}
+
+      @dummy = Dummy.new
+      @avatar = @dummy.avatar
+
+      @current_env = RAILS_ENV
+    end
+
+    teardown do
+      rails_env(@current_env)
+    end
+
+    should "get the correct credentials when RAILS_ENV is production" do
+      rails_env("production")
+      assert_equal({:key => "12345"},
+                   @avatar.parse_credentials('production' => {:key => '12345'},
+                                             :development => {:key => "54321"}))
+    end
+
+    should "get the correct credentials when RAILS_ENV is development" do
+      rails_env("development")
+      assert_equal({:key => "54321"},
+                   @avatar.parse_credentials('production' => {:key => '12345'},
+                                             :development => {:key => "54321"}))
+    end
+
+    should "return the argument if the key does not exist" do
+      rails_env("not really an env")
+      assert_equal({:test => "12345"}, @avatar.parse_credentials(:test => "12345"))
+    end
+  end
+  
+  context "An attachment with GridFS storage" do
+    setup do
+      @dummy_connection = stub
+      @dummy_connection.stubs(:db => @dummy_connection)
+      Mongo::Connection.stubs(:new => @dummy_connection)
+
+      rebuild_model :storage => :gridfs,
+                    :path => ":attachment/:style/:basename.:extension",
+                    :gridfs => {
+                      'database' => 'dummy',
+                    }
+    end
+
+    should "be extended by the Gridfs module" do
+      assert Dummy.new.avatar.is_a?(Paperclip::Storage::Gridfs)
+    end
+
+    should "not be extended by the Filesystem module" do
+      assert ! Dummy.new.avatar.is_a?(Paperclip::Storage::Filesystem)
+    end
+
+    context "when assigned" do
+      setup do
+        @file = File.new(File.join(File.dirname(__FILE__), 'fixtures', '5k.png'), 'rb')
+        @dummy = Dummy.new
+        @dummy.avatar = @file
+      end
+
+      teardown { @file.close }
+
+      context "and saved" do
+        setup do
+          GridFS::GridStore.stubs(:open).with(anything, @dummy.avatar.path, "w", anything)
+          @dummy.save
+        end
+
+        should "succeed" do
+          assert true
+        end
+      end
+      
+      context "and remove" do
+        setup do
+          GridFS::GridStore.stubs(:exist?).returns(true)
+          GridFS::GridStore.stubs(:unlink)
+          @dummy.destroy_attached_files
+        end
+      
+        should "succeed" do
+          assert true
         end
       end
     end
